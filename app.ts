@@ -10,6 +10,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Forge } from './store.ts';
 import { handleRest, HttpError, type RestRequest } from './rest.ts';
+import { handleInfoRefs, handleReceivePack, handleUploadPack } from './githttp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -70,6 +71,16 @@ export function authorized(req: IncomingMessage, token: string): boolean {
     }
   }
   return false;
+}
+
+/** Answer with a raw (non-JSON) body: the git wire replies. */
+function sendRaw(res: ServerResponse, status: number, contentType: string, body: Buffer, requestId: string): void {
+  res.writeHead(status, {
+    'content-type': contentType,
+    'content-length': body.length,
+    'x-github-request-id': requestId,
+  });
+  res.end(body);
 }
 
 function pathSegments(pathname: string): string[] {
@@ -141,7 +152,43 @@ export function createApp(): Server {
           return;
         }
 
-        // Everything else is a JSON 404 for now; the git, GraphQL and MCP surfaces land in
+        // The git smart-HTTP surface: /{owner}/{repo}.git/...
+        if (segments.length >= 3 && segments[1].endsWith('.git')) {
+          if (!authorized(req, token)) {
+            sendJson(res, 401, { message: 'Bad credentials' }, requestId);
+            return;
+          }
+          const owner = segments[0];
+          const repoName = segments[1].slice(0, -'.git'.length);
+          const gitProtocol = req.headers['git-protocol'];
+          if (method === 'GET' && segments[2] === 'info' && segments[3] === 'refs') {
+            const reply = handleInfoRefs(forge, owner, repoName, url.searchParams.get('service'), gitProtocol);
+            if (reply.contentType.startsWith('application/json')) sendJson(res, reply.status, JSON.parse(reply.body.toString('utf8')), requestId);
+            else sendRaw(res, reply.status, reply.contentType, reply.body, requestId);
+            return;
+          }
+          if (method === 'POST' && (segments[2] === 'git-upload-pack' || segments[2] === 'git-receive-pack')) {
+            const repo = forge.getRepo(owner, repoName);
+            if (!repo) {
+              sendJson(res, 404, { message: 'Not Found' }, requestId);
+              return;
+            }
+            try {
+              const reply =
+                segments[2] === 'git-upload-pack'
+                  ? handleUploadPack(repo, body, gitProtocol)
+                  : handleReceivePack(repo, body);
+              sendRaw(res, reply.status, reply.contentType, reply.body, requestId);
+            } catch {
+              sendJson(res, 400, { message: 'Bad git request' }, requestId);
+            }
+            return;
+          }
+          sendJson(res, 404, { message: 'Not Found' }, requestId);
+          return;
+        }
+
+        // Everything else is a JSON 404 for now; the GraphQL and MCP surfaces land in
         // their own stages and take over their routes below.
         sendJson(res, 404, { message: 'Not Found' }, requestId);
       } catch (err) {
