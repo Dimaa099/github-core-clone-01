@@ -55,6 +55,43 @@ export class ObjectStore {
     if (hashObject(obj.type, obj.data) !== oid) throw new Error(`object ${oid} does not hash to its id`);
     if (!this.objects.has(oid)) this.objects.set(oid, obj);
   }
+
+  /**
+   * Store an object whose id the caller derived by hashing this exact data itself (the pack
+   * reader computes every id it returns), so re-hashing would only repeat the same work.
+   */
+  putTrusted(oid: string, obj: GitObj): void {
+    if (!this.objects.has(oid)) this.objects.set(oid, obj);
+  }
+}
+
+// ----------------------------------------------------------------------------------------------
+// parse caches: object bytes are content-addressed and immutable, so a parse keyed by id is
+// valid for the life of the process. The walkers below (ancestry, reachability, listings) are
+// the hot paths — a push's fast-forward check walks the whole chain on every push.
+
+const commitParseCache = new Map<string, CommitView>();
+const treeParseCache = new Map<string, TreeEntry[]>();
+const PARSE_CACHE_LIMIT = 100_000;
+
+export function parseCommitByOid(store: ObjectStore, oid: string): CommitView | undefined {
+  const cached = commitParseCache.get(oid);
+  if (cached) return cached;
+  const obj = store.get(oid);
+  if (!obj || obj.type !== 'commit') return undefined;
+  const parsed = parseCommit(obj.data);
+  if (commitParseCache.size < PARSE_CACHE_LIMIT) commitParseCache.set(oid, parsed);
+  return parsed;
+}
+
+export function parseTreeByOid(store: ObjectStore, oid: string): TreeEntry[] | undefined {
+  const cached = treeParseCache.get(oid);
+  if (cached) return cached;
+  const obj = store.get(oid);
+  if (!obj || obj.type !== 'tree') return undefined;
+  const parsed = parseTree(obj.data);
+  if (treeParseCache.size < PARSE_CACHE_LIMIT) treeParseCache.set(oid, parsed);
+  return parsed;
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -199,7 +236,7 @@ export function flattenTree(store: ObjectStore, treeOid: string | undefined): Ma
   const walk = (oid: string, prefix: string): void => {
     const obj = store.get(oid);
     if (!obj || obj.type !== 'tree') return;
-    for (const entry of parseTree(obj.data)) {
+    for (const entry of parseTreeByOid(store, oid) ?? []) {
       const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
       if (entry.mode === '40000') walk(entry.oid, path);
       else out.set(path, { oid: entry.oid, mode: entry.mode });
@@ -211,9 +248,7 @@ export function flattenTree(store: ObjectStore, treeOid: string | undefined): Ma
 
 /** The tree id a commit names, or undefined when the commit is unknown. */
 export function commitTree(store: ObjectStore, commitOid: string): string | undefined {
-  const obj = store.get(commitOid);
-  if (!obj || obj.type !== 'commit') return undefined;
-  return parseCommit(obj.data).tree;
+  return parseCommitByOid(store, commitOid)?.tree;
 }
 
 /** Peel tags to the object they ultimately name (a commit, in every case the suite builds). */
@@ -246,7 +281,7 @@ export function collectReachable(store: ObjectStore, roots: Iterable<string>, sh
     if (!obj) continue;
     seen.add(oid);
     if (obj.type === 'commit') {
-      const commit = parseCommit(obj.data);
+      const commit = parseCommitByOid(store, oid)!;
       queue.push(commit.tree);
       if (!(shallowBoundary && shallowBoundary.has(oid))) {
         for (const parent of commit.parents) queue.push(parent);
@@ -254,7 +289,7 @@ export function collectReachable(store: ObjectStore, roots: Iterable<string>, sh
     } else if (obj.type === 'tag') {
       queue.push(parseTag(obj.data).object);
     } else if (obj.type === 'tree') {
-      for (const entry of parseTree(obj.data)) {
+      for (const entry of parseTreeByOid(store, oid) ?? []) {
         if (entry.mode === '160000') continue;
         queue.push(entry.oid);
       }
@@ -274,7 +309,7 @@ export function isAncestor(store: ObjectStore, ancestor: string, descendant: str
     seen.add(oid);
     const obj = store.get(oid);
     if (!obj || obj.type !== 'commit') continue;
-    for (const parent of parseCommit(obj.data).parents) queue.push(parent);
+    for (const parent of parseCommitByOid(store, oid)?.parents ?? []) queue.push(parent);
   }
   return false;
 }
@@ -290,7 +325,7 @@ export function mergeBase(store: ObjectStore, a: string, b: string): string | nu
       dist.set(oid, depth);
       const obj = store.get(oid);
       if (!obj || obj.type !== 'commit') continue;
-      for (const parent of parseCommit(obj.data).parents) queue.push([parent, depth + 1]);
+      for (const parent of parseCommitByOid(store, oid)?.parents ?? []) queue.push([parent, depth + 1]);
     }
     return dist;
   };
@@ -322,7 +357,7 @@ export function listCommits(store: ObjectStore, tip: string, limit: number): str
     if (!obj || obj.type !== 'commit') continue;
     seen.add(oid);
     out.push(oid);
-    const parents = parseCommit(obj.data).parents;
+    const parents = parseCommitByOid(store, oid)?.parents ?? [];
     for (let i = parents.length - 1; i >= 0; i -= 1) stack.push(parents[i]);
   }
   return out;

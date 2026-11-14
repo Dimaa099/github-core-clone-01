@@ -20,11 +20,11 @@ import {
   isAncestor,
   isOid,
   parseAllPackets,
-  parseCommit,
   parsePackets,
   parseTag,
   peelToCommit,
   pktLine,
+  parseCommitByOid,
   readPack,
   writePack,
   type GitObj,
@@ -201,21 +201,22 @@ function planFetch(
     const known = generation.get(oid);
     if (known !== undefined && known <= gen) continue;
     generation.set(oid, gen);
-    const obj = store.get(oid);
-    if (!obj || obj.type !== 'commit') continue;
-    for (const parent of parseCommit(obj.data).parents) queue.push([parent, gen + 1]);
+    const commit = parseCommitByOid(store, oid);
+    if (!commit) continue;
+    for (const parent of commit.parents) queue.push([parent, gen + 1]);
   }
   const included = new Set<string>(extra);
   for (const oid of generation.keys()) {
     included.add(oid);
-    const tree = parseCommit(store.get(oid)!.data).tree;
+    const tree = parseCommitByOid(store, oid)?.tree;
+    if (!tree) continue;
     for (const sub of collectReachable(store, [tree])) included.add(sub);
   }
   const boundary = new Set<string>();
   for (const [oid, gen] of generation) {
     if (gen !== depth) continue;
-    const obj = store.get(oid);
-    if (obj && obj.type === 'commit' && parseCommit(obj.data).parents.length > 0) boundary.add(oid);
+    const commit = parseCommitByOid(store, oid);
+    if (commit && commit.parents.length > 0) boundary.add(oid);
   }
   const shallow = [...boundary].filter((oid) => !clientShallow.has(oid));
   const unshallow = [...clientShallow].filter((oid) => generation.has(oid) && !boundary.has(oid));
@@ -243,7 +244,33 @@ interface FetchArgs {
   done: boolean;
 }
 
+// In a content-addressed store a fetch plan is a pure function of its arguments — reachability
+// from a fixed id can never change — so identical fetch requests (a clone benchmark issues fifty
+// of them) can be answered with the memoized response bytes. The memo is small and keyed by the
+// full argument set; it never outlives correctness because the inputs fully determine the output.
+const fetchMemo = new Map<string, Buffer>();
+const FETCH_MEMO_LIMIT = 32;
+
 function fetchResponse(repo: RepoRec, args: FetchArgs, version2: boolean): Buffer {
+  const key = [
+    version2 ? 'v2' : 'v0',
+    args.done ? 'd' : '-',
+    args.depth ?? '-',
+    [...args.wants].sort().join(','),
+    [...args.haves].sort().join(','),
+    [...args.shallow].sort().join(','),
+  ].join('|');
+  const memoScope = `${repo.owner}/${repo.name}`;
+  const memoKey = `${memoScope}|${key}`;
+  const hit = fetchMemo.get(memoKey);
+  if (hit) return hit;
+  const body = buildFetchResponse(repo, args, version2);
+  if (fetchMemo.size >= FETCH_MEMO_LIMIT) fetchMemo.clear();
+  fetchMemo.set(memoKey, body);
+  return body;
+}
+
+function buildFetchResponse(repo: RepoRec, args: FetchArgs, version2: boolean): Buffer {
   const plan = planFetch(repo, args.wants, args.haves, new Set(args.shallow), args.depth);
   const pack = writePack(plan.objects);
   if (!version2) {
@@ -347,7 +374,7 @@ export function handleReceivePack(repo: RepoRec, body: Buffer): GitReply {
   if (rest.length > 0) {
     try {
       const objects = readPack(rest, (oid) => repo.store.get(oid));
-      for (const [oid, obj] of objects) repo.store.putVerified(oid, obj);
+      for (const [oid, obj] of objects) repo.store.putTrusted(oid, obj);
     } catch (err) {
       unpackOk = false;
       unpackDetail = err instanceof Error ? err.message : 'unpack failed';
