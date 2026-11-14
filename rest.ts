@@ -57,7 +57,7 @@ export interface RestReply {
 
 const notFound = (): HttpError => new HttpError(404, 'Not Found');
 
-function repoOr404(forge: Forge, owner: string, name: string): RepoRec {
+export function repoOr404(forge: Forge, owner: string, name: string): RepoRec {
   const repo = forge.getRepo(owner, name);
   if (!repo) throw notFound();
   return repo;

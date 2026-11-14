@@ -12,6 +12,7 @@ import { Forge } from './store.ts';
 import { handleRest, HttpError, type RestRequest } from './rest.ts';
 import { handleInfoRefs, handleReceivePack, handleUploadPack } from './githttp.ts';
 import { handleGraphql } from './graphql.ts';
+import { handleMcp } from './mcp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -204,8 +205,32 @@ export function createApp(): Server {
           return;
         }
 
-        // Everything else is a JSON 404 for now; the MCP surface lands in its own stage and
-        // takes over its route below.
+        // The MCP surface. Any Authorization header at all counts as presented; its absence
+        // is the 401 the clients check for, decided before any JSON-RPC dispatch.
+        if (segments[0] === 'mcp' && segments.length === 1) {
+          if (method !== 'POST') {
+            sendJson(res, 405, { message: 'Method not allowed' }, requestId);
+            return;
+          }
+          if (req.headers.authorization === undefined) {
+            sendJson(res, 401, { message: 'Bad credentials' }, requestId);
+            return;
+          }
+          const reply = handleMcp(forge, body);
+          if (reply.body === undefined) {
+            res.writeHead(reply.status, { 'x-github-request-id': requestId });
+            res.end();
+          } else {
+            res.writeHead(reply.status, {
+              'content-type': 'application/json',
+              'content-length': Buffer.byteLength(reply.body),
+              'x-github-request-id': requestId,
+            });
+            res.end(reply.body);
+          }
+          return;
+        }
+
         sendJson(res, 404, { message: 'Not Found' }, requestId);
       } catch (err) {
         if (err instanceof HttpError) {
