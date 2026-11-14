@@ -11,6 +11,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Forge } from './store.ts';
 import { handleRest, HttpError, type RestRequest } from './rest.ts';
 import { handleInfoRefs, handleReceivePack, handleUploadPack } from './githttp.ts';
+import { handleGraphql } from './graphql.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -188,8 +189,23 @@ export function createApp(): Server {
           return;
         }
 
-        // Everything else is a JSON 404 for now; the GraphQL and MCP surfaces land in
-        // their own stages and take over their routes below.
+        // The GraphQL v4 surface.
+        if (segments[0] === 'api' && segments[1] === 'graphql' && segments.length === 2) {
+          if (method !== 'POST') {
+            sendJson(res, 405, { message: 'Method not allowed' }, requestId);
+            return;
+          }
+          if (!authorized(req, token)) {
+            sendJson(res, 401, { message: 'Bad credentials' }, requestId);
+            return;
+          }
+          const reply = handleGraphql(forge, body);
+          sendJson(res, reply.status, reply.body, requestId);
+          return;
+        }
+
+        // Everything else is a JSON 404 for now; the MCP surface lands in its own stage and
+        // takes over its route below.
         sendJson(res, 404, { message: 'Not Found' }, requestId);
       } catch (err) {
         if (err instanceof HttpError) {
