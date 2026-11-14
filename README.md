@@ -9,11 +9,16 @@ A GitHub-compatible git forge in a single Node 22 process, standard library only
 ## Run it
 
 ```sh
-# terminal 1: a stand-in env (register/done) plus the entry
-node --experimental-strip-types main.ts   # with MAKEFUN_ENV_URL and MAKEFUN_SHOP_TOKEN set
-
-# terminal 2: the kit's conformance suite against the running entry
+# quick conformance pass: boot the entry against any register/done stand-in, then
+MAKEFUN_ENV_URL=http://127.0.0.1:<env> MAKEFUN_SHOP_TOKEN=<token> \
+  node --experimental-strip-types main.ts
 node --experimental-strip-types <kit>/sdk/run.ts --url http://127.0.0.1:<port> --token "$MAKEFUN_SHOP_TOKEN" --perf
+
+# full local trial (what produced the scores in development): the kit's real env drives the
+# entry end to end and the kit's scorer scores its exports
+MAKEFUN_STATE_DIR=<state> MAKEFUN_ENV_PORT=18081 MAKEFUN_SHOP_TOKEN=<token> \
+  node <kit>/program/env/server.mjs &   # then start the entry with MAKEFUN_ENV_URL=http://127.0.0.1:18081
+MAKEFUN_EXPORT_DIR=<state>/export MAKEFUN_SCORES_DIR=<state>/scores node <kit>/program/scorer/score.mjs
 ```
 
 ---
