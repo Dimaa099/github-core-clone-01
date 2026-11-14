@@ -99,9 +99,19 @@ export class Forge {
     return this.seq;
   }
 
+  private isoCacheSeq = -1;
+  private isoCacheText = '';
+
   /** The ISO timestamp for a sequence value (or for a fresh tick when omitted). */
   iso(seq?: number): string {
-    return new Date((EPOCH_SEC + (seq ?? this.seq)) * 1000).toISOString();
+    // Serializers ask for the same sequence repeatedly (created_at and updated_at of one
+    // record), so the last conversion is kept: Date construction is the only cost here.
+    const at = seq ?? this.seq;
+    if (at === this.isoCacheSeq) return this.isoCacheText;
+    const text = new Date((EPOCH_SEC + at) * 1000).toISOString();
+    this.isoCacheSeq = at;
+    this.isoCacheText = text;
+    return text;
   }
 
   /** The git identity line for a server-made commit at `seq`. */

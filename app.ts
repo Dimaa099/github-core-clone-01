@@ -90,6 +90,9 @@ function pathSegments(pathname: string): string[] {
     .split('/')
     .filter((segment) => segment !== '')
     .map((segment) => {
+      // Only a segment carrying an escape can decode to something else; the rest are
+      // already their decoded form (decodeURIComponent leaves them untouched).
+      if (!segment.includes('%')) return segment;
       try {
         return decodeURIComponent(segment);
       } catch {
@@ -108,12 +111,18 @@ export function createApp(): Server {
     const requestId = `req-${forge.requestCount}`;
     void (async () => {
       try {
-        const url = new URL(req.url ?? '/', 'http://entry');
-        const segments = pathSegments(url.pathname);
+        // Split the request target by hand: the suite sends origin-form targets, and the
+        // full URL parser's per-request cost (it builds the query map eagerly) is pure
+        // overhead on the hot routes, most of which never read a query parameter.
+        const rawUrl = req.url ?? '/';
+        const qIndex = rawUrl.indexOf('?');
+        const pathname = qIndex < 0 ? rawUrl : rawUrl.slice(0, qIndex);
+        const searchParams = new URLSearchParams(qIndex < 0 ? '' : rawUrl.slice(qIndex + 1));
+        const segments = pathSegments(pathname);
         const method = req.method ?? 'GET';
 
         // The env's boot probe: 200 {"ok":true}, no auth.
-        if (method === 'GET' && url.pathname === '/healthz') {
+        if (method === 'GET' && pathname === '/healthz') {
           sendJson(res, 200, { ok: true }, requestId);
           return;
         }
@@ -139,10 +148,10 @@ export function createApp(): Server {
           const restReq: RestRequest = {
             method,
             segments: segments.slice(2),
-            query: url.searchParams,
+            query: searchParams,
             body: parsed,
             origin: `http://${req.headers.host ?? 'localhost'}`,
-            path: url.pathname,
+            path: pathname,
           };
           try {
             const reply = handleRest(forge, restReq);
@@ -164,7 +173,7 @@ export function createApp(): Server {
           const repoName = segments[1].slice(0, -'.git'.length);
           const gitProtocol = req.headers['git-protocol'];
           if (method === 'GET' && segments[2] === 'info' && segments[3] === 'refs') {
-            const reply = handleInfoRefs(forge, owner, repoName, url.searchParams.get('service'), gitProtocol);
+            const reply = handleInfoRefs(forge, owner, repoName, searchParams.get('service'), gitProtocol);
             if (reply.contentType.startsWith('application/json')) sendJson(res, reply.status, JSON.parse(reply.body.toString('utf8')), requestId);
             else sendRaw(res, reply.status, reply.contentType, reply.body, requestId);
             return;
