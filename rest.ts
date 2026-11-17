@@ -52,6 +52,8 @@ export interface RestRequest {
 export interface RestReply {
   status: number;
   body?: unknown;
+  /** Pre-serialized JSON body (exactly what sendJson would emit); app.ts sends it verbatim. */
+  bodyText?: string;
   headers?: Record<string, string>;
 }
 
@@ -102,6 +104,40 @@ export function issueJson(forge: Forge, repo: RepoRec, issue: IssueRec): Record<
     created_at: forge.iso(issue.seq),
     updated_at: forge.iso(issue.seq),
   };
+}
+
+/**
+ * The serialized REST body for one issue, memoized on the record. The read workload asks for
+ * the same issue thousands of times in a row; rebuilding the object graph and re-stringifying
+ * it per request is the dominant server cost of that route. The memo is keyed by a snapshot of
+ * every field the body derives from (see IssueRec.jsonCache), so any mutation — a PATCH, a new
+ * comment, a GraphQL close — misses the memo and rebuilds, never serves stale bytes.
+ */
+export function issueJsonText(forge: Forge, repo: RepoRec, issue: IssueRec): string {
+  const labelsKey = issue.labels.length === 0 ? '' : issue.labels.join('\u0001');
+  const cache = issue.jsonCache;
+  if (
+    cache !== undefined &&
+    cache.seq === issue.seq &&
+    cache.state === issue.state &&
+    cache.title === issue.title &&
+    cache.body === issue.body &&
+    cache.labelsKey === labelsKey &&
+    cache.comments === issue.comments.length
+  ) {
+    return cache.text;
+  }
+  const text = `${JSON.stringify(issueJson(forge, repo, issue))}\n`;
+  issue.jsonCache = {
+    text,
+    seq: issue.seq,
+    state: issue.state,
+    title: issue.title,
+    body: issue.body,
+    labelsKey,
+    comments: issue.comments.length,
+  };
+  return text;
 }
 
 export function pullJson(forge: Forge, repo: RepoRec, pull: PullRec): Record<string, unknown> {
@@ -632,7 +668,7 @@ export function handleRest(forge: Forge, req: RestRequest): RestReply {
       if (rest.length === 1 && method === 'POST') return createIssueHandler(forge, repo, req);
       if (rest.length === 1 && method === 'GET') return listIssues(forge, repo, req);
       const number = Number.parseInt(rest[1] ?? '', 10);
-      if (rest.length === 2 && method === 'GET') return { status: 200, body: issueJson(forge, repo, issueOr404(repo, number)) };
+      if (rest.length === 2 && method === 'GET') return { status: 200, bodyText: issueJsonText(forge, repo, issueOr404(repo, number)) };
       if (rest.length === 2 && method === 'PATCH') return patchIssue(forge, repo, number, req);
       if (rest.length === 3 && rest[2] === 'comments' && method === 'POST') return createComment(forge, repo, number, req);
       if (rest.length === 3 && rest[2] === 'comments' && method === 'GET') return listComments(forge, repo, number, req);

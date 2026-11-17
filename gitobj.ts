@@ -300,6 +300,13 @@ export function collectReachable(store: ObjectStore, roots: Iterable<string>, sh
 
 /** True when `ancestor` is `descendant` itself or one of its ancestors. */
 export function isAncestor(store: ObjectStore, ancestor: string, descendant: string): boolean {
+  if (ancestor === descendant) return true;
+  // The overwhelmingly common update is a child of the current tip: when the ancestor is a
+  // direct parent of the descendant the answer is one cached parse away, with no walk at all.
+  // (The push workload chains tip -> child 200 times; the general walk below is O(history)
+  // per push, which made a round of pushes quadratic in the history length.)
+  const head = parseCommitByOid(store, descendant);
+  if (head && head.parents.includes(ancestor)) return true;
   const seen = new Set<string>();
   const queue = [descendant];
   while (queue.length) {

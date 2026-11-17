@@ -39,6 +39,23 @@ export function sendJson(
   res.end(text);
 }
 
+/** Send a body that is already serialized JSON text (the memoized hot-route replies). */
+export function sendJsonText(
+  res: ServerResponse,
+  status: number,
+  text: string,
+  requestId: string,
+  headers: Readonly<Record<string, string>> = {},
+): void {
+  res.writeHead(status, {
+    'content-type': JSON_TYPE,
+    'content-length': Buffer.byteLength(text),
+    'x-github-request-id': requestId,
+    ...headers,
+  });
+  res.end(text);
+}
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -52,9 +69,22 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => resolve(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+const EMPTY_BODY = Buffer.alloc(0);
+const EMPTY_PARAMS = new URLSearchParams();
+
+/**
+ * True when the request can carry a body worth reading. A GET or HEAD with neither a
+ * Content-Length nor a Transfer-Encoding header has no body by definition; waiting for its
+ * 'end' event costs a full event-loop turn per request on the read hot route, for zero bytes.
+ */
+function mayHaveBody(req: IncomingMessage, method: string): boolean {
+  if (method !== 'GET' && method !== 'HEAD') return true;
+  return req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined;
 }
 
 /** The bearer-token check: Bearer/token schemes, or HTTP Basic whose password is the token. */
@@ -117,7 +147,7 @@ export function createApp(): Server {
         const rawUrl = req.url ?? '/';
         const qIndex = rawUrl.indexOf('?');
         const pathname = qIndex < 0 ? rawUrl : rawUrl.slice(0, qIndex);
-        const searchParams = new URLSearchParams(qIndex < 0 ? '' : rawUrl.slice(qIndex + 1));
+        const searchParams = qIndex < 0 ? EMPTY_PARAMS : new URLSearchParams(rawUrl.slice(qIndex + 1));
         const segments = pathSegments(pathname);
         const method = req.method ?? 'GET';
 
@@ -127,7 +157,7 @@ export function createApp(): Server {
           return;
         }
 
-        const body = await readBody(req);
+        const body = mayHaveBody(req, method) ? await readBody(req) : EMPTY_BODY;
 
         // The REST v3 surface.
         if (segments[0] === 'api' && segments[1] === 'v3') {
@@ -155,7 +185,8 @@ export function createApp(): Server {
           };
           try {
             const reply = handleRest(forge, restReq);
-            sendJson(res, reply.status, reply.body, requestId, reply.headers);
+            if (reply.bodyText !== undefined) sendJsonText(res, reply.status, reply.bodyText, requestId, reply.headers);
+            else sendJson(res, reply.status, reply.body, requestId, reply.headers);
           } catch (err) {
             if (err instanceof HttpError) sendJson(res, err.status, { message: err.message }, requestId);
             else throw err;

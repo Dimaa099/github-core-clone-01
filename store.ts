@@ -51,6 +51,22 @@ export interface IssueRec {
   labels: string[];
   comments: CommentRec[];
   seq: number;
+  /**
+   * Memo of this issue's serialized REST body (rest.ts issueJsonText). The snapshot fields are
+   * everything that body is computed from, re-checked on every read, so a mutation through any
+   * surface (REST, GraphQL or MCP) makes the memo miss instead of serving stale bytes. Label
+   * records are immutable once created (no route updates one), so the label names determine
+   * the label JSON fully.
+   */
+  jsonCache?: {
+    text: string;
+    seq: number;
+    state: 'open' | 'closed';
+    title: string;
+    body: string;
+    labelsKey: string;
+    comments: number;
+  };
 }
 
 export interface PullRec {
