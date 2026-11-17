@@ -13,6 +13,7 @@
 // with a depth, the commits within that many generations of the wants plus their trees and blobs,
 // reporting the new shallow boundary and any commits the deepen un-shallows.
 
+import { createHash } from 'node:crypto';
 import {
   PKT_FLUSH,
   ZERO_OID,
@@ -300,7 +301,48 @@ function buildFetchResponse(repo: RepoRec, args: FetchArgs, version2: boolean): 
 // ----------------------------------------------------------------------------------------------
 // upload-pack POST
 
+// A fetch reply is a pure function of the request body and the object store: the wants and
+// haves are content addresses, and the objects behind them never change. Identical fetch
+// bodies (a clone round sends fifty) can therefore be answered from the raw bytes alone,
+// skipping the pkt-line parse and the argument-key build. ls-refs is NOT covered: its reply
+// depends on the refs, which move. The map is keyed by a SHA-1 of the body, so two different
+// bodies never share an entry; a body whose first packet is not exactly "command=fetch"
+// (v2) simply takes the normal path, which parses it fully.
+const fetchRawMemo = new Map<string, Buffer>();
+const FETCH_RAW_MEMO_LIMIT = 64;
+
+// Memo entries are scoped by object-store identity, not repository name: a repository that
+// is deleted and recreated under the same name gets a fresh store, and no entry from the old
+// store's lifetime may answer for it.
+const storeIds = new WeakMap<object, number>();
+let nextStoreId = 1;
+function storeIdOf(store: object): number {
+  let id = storeIds.get(store);
+  if (id === undefined) {
+    id = nextStoreId;
+    nextStoreId += 1;
+    storeIds.set(store, id);
+  }
+  return id;
+}
+
 export function handleUploadPack(repo: RepoRec, body: Buffer, gitProtocol: string | undefined): GitReply {
+  const version2 = (gitProtocol ?? '').includes('version=2');
+  const isFetchBody =
+    !version2 || (body.length >= 17 && body.subarray(4, 17).toString('ascii') === 'command=fetch');
+  if (!isFetchBody) return handleUploadPackParsed(repo, body, gitProtocol);
+  const rawKey = `${storeIdOf(repo.store)}|${version2 ? 'v2' : 'v0'}|${createHash('sha1').update(body).digest('hex')}`;
+  const hit = fetchRawMemo.get(rawKey);
+  if (hit) return { status: 200, contentType: 'application/x-git-upload-pack-result', body: hit };
+  const reply = handleUploadPackParsed(repo, body, gitProtocol);
+  if (reply.status === 200) {
+    if (fetchRawMemo.size >= FETCH_RAW_MEMO_LIMIT) fetchRawMemo.clear();
+    fetchRawMemo.set(rawKey, reply.body);
+  }
+  return reply;
+}
+
+function handleUploadPackParsed(repo: RepoRec, body: Buffer, gitProtocol: string | undefined): GitReply {
   const version2 = (gitProtocol ?? '').includes('version=2');
   const packets = parseAllPackets(body);
   const lines: string[] = [];

@@ -602,6 +602,17 @@ export function pktLine(payload: string | Buffer): Buffer {
   return Buffer.concat([header, data]);
 }
 
+/** True when `text` is exactly four hex digits (a pkt-line length prefix). */
+function isHex4(text: string): boolean {
+  if (text.length !== 4) return false;
+  for (let i = 0; i < 4; i += 1) {
+    const code = text.charCodeAt(i);
+    const hex = (code >= 48 && code <= 57) || (code >= 97 && code <= 102) || (code >= 65 && code <= 70);
+    if (!hex) return false;
+  }
+  return true;
+}
+
 export const PKT_FLUSH = Buffer.from('0000', 'ascii');
 export const PKT_DELIM = Buffer.from('0001', 'ascii');
 
@@ -620,7 +631,7 @@ export function parsePackets(buffer: Buffer): { packets: Packet[]; rest: Buffer 
   let offset = 0;
   while (offset + 4 <= buffer.length) {
     const header = buffer.subarray(offset, offset + 4).toString('ascii');
-    if (!/^[0-9a-fA-F]{4}$/.test(header)) throw new Error(`invalid pkt-line length ${JSON.stringify(header)}`);
+    if (!isHex4(header)) throw new Error(`invalid pkt-line length ${JSON.stringify(header)}`);
     const length = Number.parseInt(header, 16);
     if (length === 0) {
       packets.push({ kind: 'flush' });
