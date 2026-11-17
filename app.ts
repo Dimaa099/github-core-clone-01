@@ -9,7 +9,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Forge } from './store.ts';
-import { handleRest, HttpError, type RestRequest } from './rest.ts';
+import { createIssueHandler, handleRest, HttpError, issueJsonText, repoOr404, type RestRequest } from './rest.ts';
 import { handleInfoRefs, handleReceivePack, handleUploadPack } from './githttp.ts';
 import { handleGraphql } from './graphql.ts';
 import { handleMcp } from './mcp.ts';
@@ -131,12 +131,49 @@ function pathSegments(pathname: string): string[] {
     });
 }
 
+function isAllDigits(text: string): boolean {
+  if (text.length === 0) return false;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+
 /** Build the server. It binds nothing until the caller listens; main.ts binds an ephemeral port. */
 export function createApp(): Server {
   const forge = new Forge();
   const token = process.env.MAKEFUN_SHOP_TOKEN ?? '';
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    // Synchronous fast path for the single hottest route in the trial: GET one issue, the
+    // read workload's 2,000 sequential calls. It answers only the exact canonical shape
+    // (no percent-escapes, no body, no extra segments) with the same status, headers and
+    // bytes the generic route produces; every other shape falls through to it untouched.
+    {
+      const method0 = req.method ?? 'GET';
+      const rawUrl0 = req.url ?? '/';
+      if (method0 === 'GET' && !mayHaveBody(req, method0) && rawUrl0.startsWith('/api/v3/repos/') && !rawUrl0.includes('%')) {
+        const qIndex0 = rawUrl0.indexOf('?');
+        const parts = (qIndex0 < 0 ? rawUrl0 : rawUrl0.slice(0, qIndex0)).split('/');
+        if (parts.length === 8 && parts[6] === 'issues' && isAllDigits(parts[7])) {
+          forge.requestCount += 1;
+          const requestId = `req-${forge.requestCount}`;
+          if (!authorized(req, token)) {
+            sendJson(res, 401, { message: 'Bad credentials' }, requestId);
+            return;
+          }
+          const repo = forge.getRepo(parts[4], parts[5]);
+          const issue = repo?.issues.get(Number(parts[7]));
+          if (!repo || !issue) {
+            sendJson(res, 404, { message: 'Not Found' }, requestId);
+            return;
+          }
+          sendJsonText(res, 200, issueJsonText(forge, repo, issue), requestId);
+          return;
+        }
+      }
+    }
     forge.requestCount += 1;
     const requestId = `req-${forge.requestCount}`;
     void (async () => {
@@ -184,7 +221,13 @@ export function createApp(): Server {
             path: pathname,
           };
           try {
-            const reply = handleRest(forge, restReq);
+            // The write workload's route, dispatched directly to its handler: the generic
+            // router's chain of segment comparisons is pure overhead for it. Same handler,
+            // same replies; any other shape takes the generic route.
+            const reply =
+              method === 'POST' && segments.length === 6 && segments[2] === 'repos' && segments[5] === 'issues'
+                ? createIssueHandler(forge, repoOr404(forge, segments[3], segments[4]), restReq)
+                : handleRest(forge, restReq);
             if (reply.bodyText !== undefined) sendJsonText(res, reply.status, reply.bodyText, requestId, reply.headers);
             else sendJson(res, reply.status, reply.body, requestId, reply.headers);
           } catch (err) {

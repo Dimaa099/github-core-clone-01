@@ -468,7 +468,7 @@ function validateLabels(repo: RepoRec, labels: unknown): string[] {
   return names;
 }
 
-function createIssueHandler(forge: Forge, repo: RepoRec, req: RestRequest): RestReply {
+export function createIssueHandler(forge: Forge, repo: RepoRec, req: RestRequest): RestReply {
   const body = req.body ?? {};
   const title = typeof body.title === 'string' ? body.title : '';
   if (title === '') throw new HttpError(422, 'Title is required');
