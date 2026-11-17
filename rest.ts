@@ -53,7 +53,7 @@ export interface RestReply {
   status: number;
   body?: unknown;
   /** Pre-serialized JSON body (exactly what sendJson would emit); app.ts sends it verbatim. */
-  bodyText?: string;
+  bodyText?: string | Buffer;
   headers?: Record<string, string>;
 }
 
@@ -113,7 +113,7 @@ export function issueJson(forge: Forge, repo: RepoRec, issue: IssueRec): Record<
  * every field the body derives from (see IssueRec.jsonCache), so any mutation — a PATCH, a new
  * comment, a GraphQL close — misses the memo and rebuilds, never serves stale bytes.
  */
-export function issueJsonText(forge: Forge, repo: RepoRec, issue: IssueRec): string {
+export function issueJsonText(forge: Forge, repo: RepoRec, issue: IssueRec): Buffer {
   const labelsKey = issue.labels.length === 0 ? '' : issue.labels.join('\u0001');
   const cache = issue.jsonCache;
   if (
@@ -127,7 +127,7 @@ export function issueJsonText(forge: Forge, repo: RepoRec, issue: IssueRec): str
   ) {
     return cache.text;
   }
-  const text = `${JSON.stringify(issueJson(forge, repo, issue))}\n`;
+  const text = Buffer.from(`${JSON.stringify(issueJson(forge, repo, issue))}\n`, 'utf8');
   issue.jsonCache = {
     text,
     seq: issue.seq,

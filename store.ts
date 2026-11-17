@@ -59,7 +59,8 @@ export interface IssueRec {
    * the label JSON fully.
    */
   jsonCache?: {
-    text: string;
+    /** The serialized body as bytes, ready to write to the socket with no re-encoding. */
+    text: Buffer;
     seq: number;
     state: 'open' | 'closed';
     title: string;

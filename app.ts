@@ -39,17 +39,17 @@ export function sendJson(
   res.end(text);
 }
 
-/** Send a body that is already serialized JSON text (the memoized hot-route replies). */
+/** Send a body that is already serialized JSON (the memoized hot-route replies). */
 export function sendJsonText(
   res: ServerResponse,
   status: number,
-  text: string,
+  text: string | Buffer,
   requestId: string,
   headers: Readonly<Record<string, string>> = {},
 ): void {
   res.writeHead(status, {
     'content-type': JSON_TYPE,
-    'content-length': Buffer.byteLength(text),
+    'content-length': typeof text === 'string' ? Buffer.byteLength(text) : text.length,
     'x-github-request-id': requestId,
     ...headers,
   });

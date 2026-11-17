@@ -88,6 +88,10 @@ function v2Advertisement(): Buffer {
   ]);
 }
 
+// The v2 advertisement names no repository state — it is the same bytes for every repo and
+// every request — so it is framed once and shared. (A clone round asks for it 50 times.)
+const V2_ADVERTISEMENT = v2Advertisement();
+
 export function handleInfoRefs(
   forge: Forge,
   owner: string,
@@ -102,7 +106,7 @@ export function handleInfoRefs(
   if (!repo) return jsonError(404, 'Not Found');
   const contentType = `application/x-${service}-advertisement`;
   if (service === 'git-upload-pack' && (gitProtocol ?? '').includes('version=2')) {
-    return { status: 200, contentType, body: v2Advertisement() };
+    return { status: 200, contentType, body: V2_ADVERTISEMENT };
   }
   return { status: 200, contentType, body: v0Advertisement(repo, service) };
 }
