@@ -146,6 +146,12 @@ async function run(): Promise<void> {
   const origin = envOrigin();
 
   const server = createApp();
+  // The suite drives the whole trial over pooled keep-alive connections, with pauses
+  // between phases while it builds its next fixture (the push payloads, the clone
+  // history). Node's default 5 s keep-alive can drop those sockets mid-trial on a
+  // loaded pod and force reconnects into the timed rounds; hold them for the trial.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
   await new Promise<void>((resolve) => {
     server.listen(0, resolve);
   });
